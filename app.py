@@ -69,6 +69,12 @@ HTML_CONTENT = r"""
 
     * { box-sizing: border-box; }
 
+    /* 부드러운 스크롤 · 모바일 관성(momentum) 스크롤 */
+    html {
+      scroll-behavior: smooth;
+      -webkit-overflow-scrolling: touch;
+    }
+
     body {
       margin: 0;
       font-family: "Pretendard Variable", Pretendard, "Segoe UI", "Malgun Gothic", -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
@@ -79,6 +85,8 @@ HTML_CONTENT = r"""
         radial-gradient(820px 480px at 100% -6%, rgba(16,197,192,.07), transparent 55%),
         #ffffff;
       background-attachment: fixed;
+      -webkit-overflow-scrolling: touch;   /* iOS 관성 스크롤로 슬라이딩을 부드럽게 */
+      overscroll-behavior-y: none;         /* 상·하단 바운스 시 화면 흔들림 완화 */
     }
 
     /* ---------- 헤더 ---------- */
@@ -438,6 +446,8 @@ HTML_CONTENT = r"""
       border-radius: 18px;
       box-shadow: var(--shadow);
       overflow-x: auto;              /* 모바일 가로 스크롤 */
+      -webkit-overflow-scrolling: touch;   /* 관성 스크롤로 부드럽게 */
+      overscroll-behavior-x: contain;
     }
     table { width: 100%; border-collapse: collapse; font-size: 14px; min-width: 640px; }
     thead th {
@@ -558,6 +568,8 @@ HTML_CONTENT = r"""
       padding: 20px; z-index: 1000;
     }
     .modal-overlay.show { display: flex; }
+    /* 배경(딤 영역)을 드래그해도 뒤 화면이 스크롤되지 않도록 */
+    .modal-overlay { overscroll-behavior: contain; touch-action: none; }
     .modal-panel {
       position: relative;
       background: #fff;
@@ -565,7 +577,11 @@ HTML_CONTENT = r"""
       border-radius: 20px;
       box-shadow: 0 24px 60px rgba(40,40,90,.28);
       width: 100%; max-width: 560px;
-      max-height: 84vh; overflow-y: auto;
+      max-height: 84vh;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;   /* iOS 관성 스크롤 */
+      overscroll-behavior: contain;         /* 팝업 스크롤이 뒤 화면으로 전파되지 않게 */
+      touch-action: pan-y;                  /* 팝업 안에서는 세로 스크롤(터치)을 허용 */
       padding: 26px 26px 24px;
       animation: modalIn .2s cubic-bezier(.34,1.4,.64,1);
     }
@@ -1702,10 +1718,17 @@ HTML_CONTENT = r"""
   }
 
   /* ---------- 키워드 연관성 설명 팝업 ---------- */
+  // 팝업이 열려 있는 동안 뒤 화면(본문) 스크롤을 잠가서, 터치 스크롤이 팝업 안에서만 동작하도록 한다.
+  function lockBodyScroll(lock) {
+    const val = lock ? "hidden" : "";
+    document.documentElement.style.overflow = val;
+    document.body.style.overflow = val;
+  }
   function closeKeywordModal() {
     const m = $("kwModal");
     m.classList.remove("show");
     m.setAttribute("aria-hidden", "true");
+    lockBodyScroll(false);
   }
 
   /* 초록에서 키워드가 등장하는 '원문 문장'을 뽑음 (번역·표시 공용) */
@@ -1854,6 +1877,10 @@ HTML_CONTENT = r"""
     const m = $("kwModal");
     m.classList.add("show");
     m.setAttribute("aria-hidden", "false");
+    lockBodyScroll(true);
+    // 팝업 내용은 항상 위에서부터 보이도록, 스크롤 대상은 팝업 패널로 맞춘다.
+    const panel = m.querySelector(".modal-panel");
+    if (panel) panel.scrollTop = 0;
     m.scrollTop = 0;
 
     // 각 예시 문장을 한국어로 번역해 채운다 (비동기, 최신 팝업 결과만 반영)
@@ -2008,6 +2035,12 @@ HTML_CONTENT = r"""
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#39;");
   }
+
+  /* ---------- 초기화 ----------
+     홈페이지에 들어오면 버튼을 누르지 않아도 '요즘 뜨는 성분'을 바로 분석해 보여준다.
+     (analyzeTrending 안에서 참조하는 trendingCache/trendingRunning 이 초기화된 뒤 호출해야
+      TDZ 오류가 없으므로 스크립트 맨 끝에서 실행한다.) */
+  analyzeTrending();
   </script>
 </body>
 </html>
