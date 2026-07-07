@@ -558,26 +558,33 @@ HTML_CONTENT = r"""
     .trend-chip .tc-growth.down { color: var(--down); }
     .trend-chip .tc-growth.flat { color: var(--flat); }
 
-    /* ---------- 키워드 연관성 팝업 ---------- */
+    /* ---------- 키워드 연관성 팝업 ----------
+       Streamlit 컴포넌트는 높이 고정(예: 2400px) iframe 안에서 렌더된다.
+       position:fixed 는 이 '거대한 iframe'을 기준으로 잡혀 팝업이 화면 밖(중앙 1200px 부근)에
+       떠버린다. 그래서 오버레이는 '문서 전체'를 덮는 absolute 로 두고, 패널은 사용자가
+       클릭한 지점(pageY)에 맞춰 JS로 top 을 지정해 '보고 있는 화면 안'에 뜨도록 한다. */
     .modal-overlay {
-      position: fixed; inset: 0;
+      position: absolute;
+      top: 0; left: 0; right: 0;         /* height 는 JS에서 문서 전체 높이로 지정 */
       background: rgba(20,20,43,.45);
       backdrop-filter: blur(3px);
       display: none;
-      align-items: center; justify-content: center;
-      padding: 20px; z-index: 1000;
+      z-index: 1000;
+      overscroll-behavior: contain;
+      touch-action: none;                /* 딤 영역 드래그로 뒤 화면이 스크롤되지 않도록 */
     }
-    .modal-overlay.show { display: flex; }
-    /* 배경(딤 영역)을 드래그해도 뒤 화면이 스크롤되지 않도록 */
-    .modal-overlay { overscroll-behavior: contain; touch-action: none; }
+    .modal-overlay.show { display: block; }
     .modal-panel {
-      position: relative;
+      position: absolute;
+      left: 50%;
+      transform: translateX(-50%);       /* top 은 JS가 클릭 지점 기준으로 지정 */
       background: #fff;
       border: 1px solid var(--border);
       border-radius: 20px;
       box-shadow: 0 24px 60px rgba(40,40,90,.28);
-      width: 100%; max-width: 560px;
-      max-height: 84vh;
+      width: calc(100% - 28px);
+      max-width: 560px;
+      max-height: 84vh;                    /* JS 미적용 시 폴백 (JS가 화면 높이에 맞춰 재지정) */
       overflow-y: auto;
       -webkit-overflow-scrolling: touch;   /* iOS 관성 스크롤 */
       overscroll-behavior: contain;         /* 팝업 스크롤이 뒤 화면으로 전파되지 않게 */
@@ -585,7 +592,10 @@ HTML_CONTENT = r"""
       padding: 26px 26px 24px;
       animation: modalIn .2s cubic-bezier(.34,1.4,.64,1);
     }
-    @keyframes modalIn { from { transform: translateY(12px) scale(.98); opacity: 0; } to { transform: none; opacity: 1; } }
+    @keyframes modalIn {
+      from { transform: translateX(-50%) translateY(10px) scale(.98); opacity: 0; }
+      to   { transform: translateX(-50%) translateY(0) scale(1); opacity: 1; }
+    }
     .modal-close {
       position: absolute; top: 12px; right: 14px;
       width: 34px; height: 34px; border: none; border-radius: 50%;
@@ -1520,7 +1530,7 @@ HTML_CONTENT = r"""
       el.style.color = hue;                                 // 박스 없이 글자에 색상
       el.style.fontSize = (13 + s * 9).toFixed(1) + "px";   // 빈도 → 글자 크기
       // 클릭 시 연관성 설명 팝업 (드래그로 회전한 경우는 제외)
-      el.addEventListener("click", () => { if (!mmDidDrag) openKeywordModal(word, hue); });
+      el.addEventListener("click", (ev) => { if (!mmDidDrag) openKeywordModal(word, hue, ev); });
       stage.appendChild(el);
       const y = n === 1 ? 0 : 1 - (i / (n - 1)) * 2;
       const r = Math.sqrt(Math.max(0, 1 - y * y));
@@ -1718,17 +1728,52 @@ HTML_CONTENT = r"""
   }
 
   /* ---------- 키워드 연관성 설명 팝업 ---------- */
-  // 팝업이 열려 있는 동안 뒤 화면(본문) 스크롤을 잠가서, 터치 스크롤이 팝업 안에서만 동작하도록 한다.
-  function lockBodyScroll(lock) {
-    const val = lock ? "hidden" : "";
-    document.documentElement.style.overflow = val;
-    document.body.style.overflow = val;
-  }
   function closeKeywordModal() {
     const m = $("kwModal");
     m.classList.remove("show");
     m.setAttribute("aria-hidden", "true");
-    lockBodyScroll(false);
+  }
+
+  /* 실제로 사용자가 보고 있는 화면(뷰포트) 높이 추정.
+     iframe 안에서 window.innerHeight 는 iframe 높이(예: 2400)로 잡히므로,
+     기기 화면 높이(screen.height)·visualViewport 와 함께 최소값을 취해 실제 화면에 가깝게 만든다. */
+  function screenVisibleHeight() {
+    let h = window.innerHeight || 600;
+    if (window.visualViewport && window.visualViewport.height) h = Math.min(h, window.visualViewport.height);
+    if (window.screen && window.screen.height) h = Math.min(h, window.screen.height);
+    return Math.max(360, h);
+  }
+
+  /* 팝업을 '클릭한 지점(pageY)' 근처, 그리고 화면 높이에 맞춰 배치한다.
+     - 오버레이는 문서 전체를 덮도록 높이를 지정 (딤 배경)
+     - 패널 최대 높이를 화면의 86%로 제한 → 화면을 넘치면 팝업 안에서 스크롤
+     - 패널 top 을 클릭 지점 살짝 위에 두어, 보고 있는 화면 안에서 바로 보이도록 함 */
+  function positionKeywordModal(pageY) {
+    const overlay = $("kwModal");
+    const panel = overlay.querySelector(".modal-panel");
+    if (!panel) return;
+
+    const scrollY = window.pageYOffset || document.documentElement.scrollTop || 0;
+    const docH = Math.max(
+      document.documentElement.scrollHeight,
+      document.body.scrollHeight,
+      scrollY + (window.innerHeight || 600)
+    );
+    overlay.style.height = docH + "px";
+
+    const visH = screenVisibleHeight();
+    const cap = Math.round(visH * 0.86);
+    panel.style.maxHeight = cap + "px";
+
+    const panelH = Math.min(panel.offsetHeight, cap);
+    let top;
+    if (typeof pageY === "number" && isFinite(pageY)) {
+      top = pageY - Math.min(panelH * 0.28, 130);         // 클릭 지점 살짝 위에서 시작
+    } else {
+      top = scrollY + Math.max(10, (visH - panelH) / 2);  // 좌표가 없으면 현재 화면 중앙
+    }
+    top = Math.max(8, Math.min(top, docH - panelH - 8));  // 문서 범위 안으로 clamp
+    panel.style.top = top + "px";
   }
 
   /* 초록에서 키워드가 등장하는 '원문 문장'을 뽑음 (번역·표시 공용) */
@@ -1811,8 +1856,9 @@ HTML_CONTENT = r"""
       how: "이 원료 연구에서 <b>자주 함께 언급되는 관련 주제</b>로 등장해요." };
   }
 
-  /* 클릭한 키워드가 검색 원료와 어떻게 연관되는지 실제 논문 근거로 설명 */
-  function openKeywordModal(word, hue) {
+  /* 클릭한 키워드가 검색 원료와 어떻게 연관되는지 실제 논문 근거로 설명
+     (ev: 클릭 이벤트 — 팝업을 클릭 지점 근처에 띄우기 위해 사용) */
+  function openKeywordModal(word, hue, ev) {
     const kw = word.toLowerCase();
     const ing = capitalize(currentIngredient);
     const total = currentPapers.length;
@@ -1877,11 +1923,14 @@ HTML_CONTENT = r"""
     const m = $("kwModal");
     m.classList.add("show");
     m.setAttribute("aria-hidden", "false");
-    lockBodyScroll(true);
-    // 팝업 내용은 항상 위에서부터 보이도록, 스크롤 대상은 팝업 패널로 맞춘다.
+    // 클릭 지점(문서 좌표)을 구해 팝업을 '보고 있는 화면 안'에 배치한다.
+    const pageY = ev
+      ? (typeof ev.pageY === "number" ? ev.pageY
+         : (typeof ev.clientY === "number" ? ev.clientY + (window.pageYOffset || 0) : undefined))
+      : undefined;
     const panel = m.querySelector(".modal-panel");
-    if (panel) panel.scrollTop = 0;
-    m.scrollTop = 0;
+    if (panel) panel.scrollTop = 0;   // 팝업 내용은 항상 위에서부터
+    positionKeywordModal(pageY);
 
     // 각 예시 문장을 한국어로 번역해 채운다 (비동기, 최신 팝업 결과만 반영)
     const token = ++kwModalToken;
