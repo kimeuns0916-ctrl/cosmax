@@ -1921,15 +1921,67 @@ HTML_CONTENT = r"""
     { en: "snail mucin", ko: "달팽이 뮤신" },
     { en: "glutathione", ko: "글루타치온" }
   ];
+
+  /* 시드(대표 스냅샷) — 네이버 실시간 검색어처럼 '즉시' 순위를 보여주기 위한 초기값.
+     페이지 진입 즉시 이 값을 0초에 그려주고, 실제 최신 수치는 백그라운드로 조용히 갱신한다.
+     (수치는 대략적인 대표값이며, 갱신이 끝나면 실제 PubMed 집계로 교체됨) */
+  const TRENDING_SEED = [
+    { en: "ectoin",            ko: "엑토인",            recent: 44,  growth: 38 },
+    { en: "bakuchiol",         ko: "바쿠치올",          recent: 58,  growth: 31 },
+    { en: "madecassoside",     ko: "마데카소사이드",    recent: 52,  growth: 26 },
+    { en: "tranexamic acid",   ko: "트라넥삼산",        recent: 185, growth: 22 },
+    { en: "centella asiatica", ko: "센텔라(병풀)",      recent: 205, growth: 18 },
+    { en: "niacinamide",       ko: "나이아신아마이드",  recent: 330, growth: 15 },
+    { en: "snail mucin",       ko: "달팽이 뮤신",       recent: 33,  growth: 13 },
+    { en: "ceramide",          ko: "세라마이드",        recent: 510, growth: 11 },
+    { en: "peptide",           ko: "펩타이드",          recent: 880, growth: 9  },
+    { en: "azelaic acid",      ko: "아젤라산",          recent: 158, growth: 7  }
+  ];
+
+  // 최신 집계 결과를 브라우저에 저장해 재방문 시에도 즉시 표시 (localStorage 미지원 환경은 무시)
+  const TRENDING_CACHE_KEY = "ingretrend_trending_v1";
+  const TRENDING_TTL = 6 * 60 * 60 * 1000;   // 6시간
+
   let trendingCache = null;
   let trendingRunning = false;
 
-  async function analyzeTrending() {
+  function readTrendingCache() {
+    try {
+      const raw = localStorage.getItem(TRENDING_CACHE_KEY);
+      if (!raw) return null;
+      const obj = JSON.parse(raw);
+      if (!obj || !Array.isArray(obj.list) || !obj.ts) return null;
+      return obj;
+    } catch (e) { return null; }
+  }
+  function writeTrendingCache(list) {
+    try { localStorage.setItem(TRENDING_CACHE_KEY, JSON.stringify({ list, ts: Date.now() })); } catch (e) {}
+  }
+
+  /* 홈 진입 시 초기화: 저장된 최신 순위가 있으면 그걸, 없으면 시드를 '즉시' 그려 첫 화면을 빠르게.
+     그런 다음 화면이 뜬 뒤 백그라운드로 실제 최신 데이터를 조용히 받아 교체한다. */
+  function bootTrending() {
+    const cached = readTrendingCache();
+    if (cached && (Date.now() - cached.ts) < TRENDING_TTL) {
+      trendingCache = cached.list;
+      renderTrendingChips(cached.list, cached.ts);
+      return;
+    }
+    // 즉시 시드 표시 (네트워크 대기 없음)
+    renderTrendingChips(TRENDING_SEED, null, true);
+    // 첫 페인트 후 백그라운드 갱신 (실패해도 시드가 그대로 남음)
+    setTimeout(() => { analyzeTrending({ background: true }); }, 600);
+  }
+
+  async function analyzeTrending(opts) {
+    opts = opts || {};
+    const background = !!opts.background;   // background=true면 시드를 유지한 채 조용히 갱신
     if (trendingRunning) return;
     const refresh = $("trendingRefresh");
     const body = $("trendingBody");
 
-    if (trendingCache) { renderTrendingChips(trendingCache); return; }   // 이미 분석했으면 재사용
+    // 수동(🔄) 호출인데 이미 최신 캐시가 있으면 재사용
+    if (!background && trendingCache) { renderTrendingChips(trendingCache, Date.now()); }
 
     trendingRunning = true;
     if (refresh) { refresh.disabled = true; refresh.classList.add("spinning"); }
@@ -1938,43 +1990,69 @@ HTML_CONTENT = r"""
     const y1 = new Date(today); y1.setFullYear(y1.getFullYear() - 1);
     const y2 = new Date(today); y2.setFullYear(y2.getFullYear() - 2);
     const maxD = fmtDate(today), d1 = fmtDate(y1), d2 = fmtDate(y2);
+    const delay = background ? 200 : API_DELAY;   // 백그라운드는 조금 더 빠르게
 
     const results = [];
     const N = TRENDING_CANDIDATES.length;
     try {
       for (let k = 0; k < N; k++) {
         const c = TRENDING_CANDIDATES[k];
-        body.innerHTML =
-          `<div class="trending-loading"><span class="spinner"></span>성분 분석 중… (${k + 1}/${N}) · <b>${escapeHtml(capitalize(c.en))}</b></div>`;
+        // 백그라운드 갱신 중에는 화면을 '분석 중'으로 덮지 않고 기존 순위를 그대로 둔다
+        if (!background) {
+          body.innerHTML =
+            `<div class="trending-loading"><span class="spinner"></span>성분 분석 중… (${k + 1}/${N}) · <b>${escapeHtml(capitalize(c.en))}</b></div>`;
+        }
         let recent = 0, prev = 0;
         try { recent = await esearchCount(c.en, d1, maxD); } catch (e) { console.warn("[IngreTrend] 인기성분 집계 실패:", c.en, e); }
-        await sleep(API_DELAY);
+        await sleep(delay);
         try { prev = await esearchCount(c.en, d2, d1); } catch (e) { console.warn("[IngreTrend] 인기성분 집계 실패:", c.en, e); }
-        await sleep(API_DELAY);
+        await sleep(delay);
         const growth = prev > 0 ? ((recent - prev) / prev) * 100 : (recent > 0 ? 100 : 0);
         results.push({ en: c.en, ko: c.ko, recent, prev, growth });
       }
       // 신호가 약한(표본이 적은) 성분 제외 후 증가율 순
       const ranked = results.filter(r => r.recent >= 8).sort((a, b) => b.growth - a.growth);
-      trendingCache = (ranked.length ? ranked : results.slice().sort((a, b) => b.recent - a.recent)).slice(0, 10);
-      renderTrendingChips(trendingCache);
+      const finalList = (ranked.length ? ranked : results.slice().sort((a, b) => b.recent - a.recent)).slice(0, 10);
+      if (finalList.length) {
+        trendingCache = finalList;
+        writeTrendingCache(finalList);
+        renderTrendingChips(finalList, Date.now());
+      }
     } catch (err) {
       console.error("[IngreTrend] 인기 성분 분석 오류:", err);
-      body.innerHTML = '<div class="trending-hint">분석 중 오류가 발생했습니다. 🔄 를 눌러 다시 시도해 주세요.</div>';
+      // 백그라운드 실패 시엔 이미 떠 있는 시드/이전 순위를 유지, 수동 실패 시에만 안내
+      if (!background && !trendingCache) {
+        body.innerHTML = '<div class="trending-hint">분석 중 오류가 발생했습니다. 🔄 를 눌러 다시 시도해 주세요.</div>';
+      }
     } finally {
       if (refresh) { refresh.disabled = false; refresh.classList.remove("spinning"); }
       trendingRunning = false;
     }
   }
 
-  function renderTrendingChips(list) {
+  /* ts(갱신 시각)로부터 '방금 전 / N분 전 / N시간 전' 문구 생성 */
+  function relTime(ts) {
+    const diff = Math.max(0, Date.now() - ts);
+    const min = Math.floor(diff / 60000);
+    if (min < 1) return "방금 전";
+    if (min < 60) return min + "분 전";
+    const hr = Math.floor(min / 60);
+    return hr + "시간 전";
+  }
+
+  function renderTrendingChips(list, ts, isSeed) {
     const body = $("trendingBody");
     if (!list || !list.length) {
       body.innerHTML = '<div class="trending-hint">표시할 결과가 없습니다.</div>';
       return;
     }
+    const caption = isSeed
+      ? '대표 스냅샷 · <span style="color:var(--primary-d)">최신 데이터로 갱신 중…</span>'
+      : ts
+        ? '최근 1년 논문 수 · 직전 1년 대비 증가율 · <b style="color:var(--text)">기준 ' + relTime(ts) + '</b> (성분 클릭 시 바로 검색)'
+        : '최근 1년 논문 수 · 직전 1년 대비 증가율 (성분 클릭 시 바로 검색)';
     body.innerHTML =
-      `<div class="trending-caption" style="font-size:12px;color:var(--text-soft);margin-bottom:10px">최근 1년 논문 수 · 직전 1년 대비 증가율 (성분 클릭 시 바로 검색)</div>` +
+      `<div class="trending-caption" style="font-size:12px;color:var(--text-soft);margin-bottom:10px">${caption}</div>` +
       `<div class="trending-chips">` +
       list.map((r, i) => {
         const g = Math.round(r.growth);
@@ -2037,10 +2115,10 @@ HTML_CONTENT = r"""
   }
 
   /* ---------- 초기화 ----------
-     홈페이지에 들어오면 버튼을 누르지 않아도 '요즘 뜨는 성분'을 바로 분석해 보여준다.
-     (analyzeTrending 안에서 참조하는 trendingCache/trendingRunning 이 초기화된 뒤 호출해야
-      TDZ 오류가 없으므로 스크립트 맨 끝에서 실행한다.) */
-  analyzeTrending();
+     홈 진입 즉시 '요즘 뜨는 성분' 순위를 (시드 또는 저장된 최신값으로) 0초에 표시하고,
+     실제 최신 데이터는 백그라운드로 조용히 갱신한다 → 첫 화면이 빠르고 순위도 바로 보인다.
+     (참조하는 상태 변수들이 초기화된 뒤 호출해야 TDZ 오류가 없으므로 스크립트 맨 끝에서 실행) */
+  bootTrending();
   </script>
 </body>
 </html>
