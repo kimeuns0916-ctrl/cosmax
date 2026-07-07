@@ -969,6 +969,7 @@
       renderResults(papers, totalFound, period, approxTrend);
       hideStatus();
       $("results").classList.add("show");
+      $("trendingPanel").style.display = "none";   // 검색 결과가 뜨면 '요즘 뜨는 성분' 순위 창 숨김
 
       // 5) 정확한 연도별 집계는 백그라운드로 채운다 (실패해도 근사치 유지)
       fetchTrendCounts(searchTerm, period).then(trend => {
